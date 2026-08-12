@@ -140,12 +140,14 @@
       botBtn.disabled = true;
       botBtn.textContent = 'Bot Running...';
 
+      const customToken = document.getElementById('token').value.trim();
+
       try {
         const response = await fetch('/api/bot/wallet-deposit', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            ...(document.getElementById('token').value ? { 'Authorization': `Bearer ${document.getElementById('token').value}` } : {})
+            ...(customToken ? { 'Authorization': customToken.startsWith('Bearer ') ? customToken : `Bearer ${customToken}` } : {})
           },
           body: JSON.stringify({
             numbers: numbersList,
@@ -185,7 +187,7 @@
           }
         }
       } catch (err) {
-        printTerminal(`Bot encounter fatal error: ${err.message}`, 'error');
+        printTerminal(`Bot encountered fatal error: ${err.message}`, 'error');
       } finally {
         botBtn.disabled = false;
         botBtn.textContent = 'Run Wallet Deposit Bot';
