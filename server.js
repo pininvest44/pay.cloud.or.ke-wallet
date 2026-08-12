@@ -5,130 +5,109 @@ require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// Resolve and normalize target URL. Enforces https:// and www. to prevent 301 redirects
-let rawBaseUrl = process.env.API_BASE_URL || 'https://www.pay.cloud.or.ke/api';
-if (!rawBaseUrl.startsWith('http://') && !rawBaseUrl.startsWith('https://')) {
-  rawBaseUrl = `https://${rawBaseUrl}`;
-}
-if (rawBaseUrl.includes('://pay.cloud.or.ke')) {
-  rawBaseUrl = rawBaseUrl.replace('://pay.cloud.or.ke', '://www.pay.cloud.or.ke');
-}
-const API_BASE_URL = rawBaseUrl.replace(/\/$/, '');
-
-const BEARER_TOKEN = process.env.BEARER_TOKEN || '';
+const API_KEY = process.env.API_KEY;
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Sanitize Kenyan phone numbers to 254XXXXXXXXX
+// Helper to sanitize phone numbers into 254XXXXXXXXX format
 function formatPhoneNumber(phone) {
-  let cleaned = phone.replace(/\D/g, '');
+  let cleaned = phone.trim().replace(/[^0-9]/g, '');
   if (cleaned.startsWith('0')) {
-    cleaned = '254' + cleaned.slice(1);
+    cleaned = '254' + cleaned.substring(1);
   } else if (cleaned.startsWith('7') || cleaned.startsWith('1')) {
     cleaned = '254' + cleaned;
+  } else if (cleaned.startsWith('+254')) {
+    cleaned = cleaned.substring(1);
   }
   return cleaned;
 }
 
+// Helper delay to enforce rate limits (2000 ms = 30 req/min)
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Streamed Wallet Deposit Bot Endpoint
-app.post('/api/bot/wallet-deposit', async (req, res) => {
-  const { numbers, amount, reference } = req.body;
+// SSE Endpoint for processing bulk batch
+app.post('/api/process-bulk', async (req, res) => {
+  const { phoneNumbers, amount, reference } = req.body;
 
-  if (!numbers || !Array.isArray(numbers) || numbers.length === 0) {
-    return res.status(400).json({ error: 'At least one target phone number is required.' });
+  if (!phoneNumbers || !Array.isArray(phoneNumbers) || phoneNumbers.length === 0) {
+    return res.status(400).json({ error: 'At least one phone number is required.' });
   }
 
-  if (!amount || isNaN(amount) || Number(amount) <= 0) {
-    return res.status(400).json({ error: 'Valid deposit amount is required.' });
+  if (!amount || Number(amount) <= 0) {
+    return res.status(400).json({ error: 'A valid amount is required.' });
   }
 
-  // Set up SSE headers
+  // Setup Server-Sent Events (SSE)
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
 
-  let token = req.headers.authorization || `Bearer ${BEARER_TOKEN}`;
-  if (!token.startsWith('Bearer ')) {
-    token = `Bearer ${token}`;
-  }
-
-  const sendBotMsg = (data) => {
+  const sendSSE = (data) => {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
-  const formattedNumbers = numbers.map(formatPhoneNumber).filter((num) => num.length === 12);
-  const total = formattedNumbers.length;
+  const total = phoneNumbers.length;
+  sendSSE({ type: 'start', total });
 
-  sendBotMsg({
-    type: 'start',
-    total,
-    message: `🤖 Bot initialized. Processing ${total} deposit request(s)...`
-  });
+  for (let i = 0; i < total; i++) {
+    const rawPhone = phoneNumbers[i];
+    const formattedPhone = formatPhoneNumber(rawPhone);
 
-  // Rate Limiting: 30 requests/min = 2000 ms delay
-  const INTERVAL_MS = 2000;
-  const endpoint = `${API_BASE_URL}/wallet/deposit`;
+    const payload = {
+      phone: formattedPhone,
+      amount: Number(amount)
+    };
 
-  for (let i = 0; i < formattedNumbers.length; i++) {
-    const phone = formattedNumbers[i];
-    const timestamp = new Date().toISOString();
+    if (reference) {
+      payload.reference = reference;
+    }
 
     try {
+      // Call CloudPay STK Push / Wallet Deposit Endpoint
       const response = await axios.post(
-        endpoint,
-        {
-          phone,
-          amount: Number(amount),
-          ...(reference ? { reference } : {})
-        },
+        'https://www.pay.cloud.or.ke/api/wallet/deposit',
+        payload,
         {
           headers: {
-            'Authorization': token,
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
+            'X-API-Key': API_KEY,
+            'Content-Type': 'application/json'
           },
-          timeout: 10000
+          timeout: 15000
         }
       );
 
-      sendBotMsg({
+      sendSSE({
         type: 'log',
-        status: 'SUCCESS',
         index: i + 1,
         total,
-        phone,
+        phone: formattedPhone,
         amount,
-        reference: response.data?.reference || 'N/A',
-        timestamp
+        status: 'SUCCESS',
+        details: response.data?.message || 'STK Push sent successfully'
       });
     } catch (error) {
-      const errorDetail = error.response?.data || error.message;
-      sendBotMsg({
+      sendSSE({
         type: 'log',
-        status: 'FAILED',
         index: i + 1,
         total,
-        phone,
+        phone: formattedPhone,
         amount,
-        error: errorDetail,
-        timestamp
+        status: 'FAILED',
+        details: error.response?.data?.message || error.message || 'API request failed'
       });
     }
 
-    if (i < formattedNumbers.length - 1) {
-      await delay(INTERVAL_MS);
+    // Enforce 30 requests per minute rate limit (2 seconds delay between requests)
+    if (i < total - 1) {
+      await delay(2000);
     }
   }
 
-  sendBotMsg({ type: 'complete', message: '🤖 Deposit Bot operation complete.' });
+  sendSSE({ type: 'complete' });
   res.end();
 });
 
 app.listen(PORT, () => {
-  console.log(`Wallet Deposit Bot server listening on port ${PORT}`);
-  console.log(`Active Target Endpoint: ${API_BASE_URL}/wallet/deposit`);
+  console.log(`Server running on port ${PORT}`);
 });
