@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wallet Deposit Bot Interface</title>
+  <style>
+    :root {
+      --bg: #090d16;
+      --card: #131c2e;
+      --accent: #3b82f6;
+      --text: #f1f5f9;
+      --muted: #64748b;
+      --success: #10b981;
+      --danger: #ef4444;
+      --border: #1e293b;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); padding: 2rem 1rem; }
+    .container { max-width: 950px; margin: 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+    @media (max-width: 768px) { .container { grid-template-columns: 1fr; } }
+
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; }
+    h2 { font-size: 1.2rem; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; }
+    .subtitle { font-size: 0.8rem; color: var(--muted); margin-bottom: 1.25rem; }
+
+    .form-group { margin-bottom: 1rem; }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.35rem; font-weight: 500; }
+    input, textarea { width: 100%; background: #0a0e17; border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem; color: var(--text); font-size: 0.9rem; }
+    input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+    textarea { height: 140px; resize: vertical; font-family: monospace; }
+
+    button { width: 100%; background: var(--accent); color: white; border: none; padding: 0.85rem; border-radius: 8px; font-weight: 600; cursor: pointer; transition: opacity 0.2s; }
+    button:hover { opacity: 0.9; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; margin-bottom: 1rem; }
+    .stat-card { background: #0a0e17; padding: 0.75rem; border-radius: 8px; text-align: center; border: 1px solid var(--border); }
+    .stat-card div { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; }
+    .stat-card span { font-size: 1.25rem; font-weight: bold; }
+    .stat-success span { color: var(--success); }
+    .stat-danger span { color: var(--danger); }
+
+    .bot-terminal { height: 360px; overflow-y: auto; background: #06090e; border: 1px solid var(--border); border-radius: 8px; padding: 0.85rem; font-family: monospace; font-size: 0.8rem; line-height: 1.5; }
+    .msg { margin-bottom: 0.5rem; word-break: break-all; }
+    .msg.info { color: #60a5fa; }
+    .msg.success { color: var(--success); }
+    .msg.error { color: var(--danger); }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <div class="card">
+      <h2>🤖 Wallet Deposit Bot</h2>
+      <div class="subtitle">Triggers automatic STK Push deposit prompts at 30 req/min.</div>
+      
+      <form id="botForm">
+        <div class="form-group">
+          <label for="token">Bearer Token (Optional override)</label>
+          <input type="password" id="token" placeholder="Uses server .env token if blank">
+        </div>
+        <div class="form-group">
+          <label for="numbers">Target Phone Numbers (One per line)</label>
+          <textarea id="numbers" placeholder="0712345678&#10;254787654321" required></textarea>
+        </div>
+        <div class="form-group">
+          <label for="amount">Deposit Amount (KES)</label>
+          <input type="number" id="amount" value="500" min="1" required>
+        </div>
+        <div class="form-group">
+          <label for="reference">Deposit Reference (Optional)</label>
+          <input type="text" id="reference" placeholder="e.g. DEP-BOT-01">
+        </div>
+        <button type="submit" id="botBtn">Run Wallet Deposit Bot</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>⚡ Bot Live Activity</h2>
+      <div class="subtitle">Real-time status stream via Server-Sent Events</div>
+
+      <div class="stats">
+        <div class="stat-card">
+          <div>Queue</div>
+          <span id="totalVal">0</span>
+        </div>
+        <div class="stat-card stat-success">
+          <div>Success</div>
+          <span id="successVal">0</span>
+        </div>
+        <div class="stat-card stat-danger">
+          <div>Failed</div>
+          <span id="failedVal">0</span>
+        </div>
+      </div>
+
+      <div class="bot-terminal" id="terminal">
+        <div class="msg info">🤖 Bot idle. Waiting for start command...</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById('botForm');
+    const botBtn = document.getElementById('botBtn');
+    const terminal = document.getElementById('terminal');
+    const totalVal = document.getElementById('totalVal');
+    const successVal = document.getElementById('successVal');
+    const failedVal = document.getElementById('failedVal');
+
+    let total = 0, success = 0, failed = 0;
+
+    function printTerminal(text, type = 'info') {
+      const div = document.createElement('div');
+      div.className = `msg ${type}`;
+      div.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
+      terminal.appendChild(div);
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const numbersList = document.getElementById('numbers').value
+        .split(/[\n,]/)
+        .map(n => n.trim())
+        .filter(n => n.length > 0);
+
+      if (numbersList.length === 0) return alert('Enter at least one phone number.');
+
+      // Reset Dashboard
+      terminal.innerHTML = '';
+      success = 0; failed = 0; total = numbersList.length;
+      totalVal.textContent = total;
+      successVal.textContent = '0';
+      failedVal.textContent = '0';
+
+      botBtn.disabled = true;
+      botBtn.textContent = 'Bot Running...';
+
+      try {
+        const response = await fetch('/api/bot/wallet-deposit', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(document.getElementById('token').value ? { 'Authorization': `Bearer ${document.getElementById('token').value}` } : {})
+          },
+          body: JSON.stringify({
+            numbers: numbersList,
+            amount: document.getElementById('amount').value,
+            reference: document.getElementById('reference').value
+          })
+        });
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          const lines = decoder.decode(value).split('\n');
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const payload = JSON.parse(line.slice(6));
+
+              if (payload.type === 'start') {
+                printTerminal(payload.message, 'info');
+              } else if (payload.type === 'log') {
+                if (payload.status === 'SUCCESS') {
+                  success++;
+                  successVal.textContent = success;
+                  printTerminal(`[${payload.index}/${payload.total}] SUCCESS: ${payload.phone} | Ref: ${payload.reference}`, 'success');
+                } else {
+                  failed++;
+                  failedVal.textContent = failed;
+                  printTerminal(`[${payload.index}/${payload.total}] FAILED: ${payload.phone} | ${JSON.stringify(payload.error)}`, 'error');
+                }
+              } else if (payload.type === 'complete') {
+                printTerminal(payload.message, 'info');
+              }
+            }
+          }
+        }
+      } catch (err) {
+        printTerminal(`Bot encounter fatal error: ${err.message}`, 'error');
+      } finally {
+        botBtn.disabled = false;
+        botBtn.textContent = 'Run Wallet Deposit Bot';
+      }
+    });
+  </script>
+</body>
+</html>
