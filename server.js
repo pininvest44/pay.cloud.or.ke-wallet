@@ -6,10 +6,13 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Ensure base URL always starts with https:// and has no trailing slash
-let rawBaseUrl = process.env.API_BASE_URL || 'https://pay.cloud.or.ke/api';
+// Resolve and normalize target URL. Enforces https:// and www. to prevent 301 redirects
+let rawBaseUrl = process.env.API_BASE_URL || 'https://www.pay.cloud.or.ke/api';
 if (!rawBaseUrl.startsWith('http://') && !rawBaseUrl.startsWith('https://')) {
   rawBaseUrl = `https://${rawBaseUrl}`;
+}
+if (rawBaseUrl.includes('://pay.cloud.or.ke')) {
+  rawBaseUrl = rawBaseUrl.replace('://pay.cloud.or.ke', '://www.pay.cloud.or.ke');
 }
 const API_BASE_URL = rawBaseUrl.replace(/\/$/, '');
 
@@ -18,7 +21,7 @@ const BEARER_TOKEN = process.env.BEARER_TOKEN || '';
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Format phone numbers to 254XXXXXXXXX
+// Sanitize Kenyan phone numbers to 254XXXXXXXXX
 function formatPhoneNumber(phone) {
   let cleaned = phone.replace(/\D/g, '');
   if (cleaned.startsWith('0')) {
@@ -43,7 +46,7 @@ app.post('/api/bot/wallet-deposit', async (req, res) => {
     return res.status(400).json({ error: 'Valid deposit amount is required.' });
   }
 
-  // Set up Server-Sent Events (SSE)
+  // Set up SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -63,7 +66,7 @@ app.post('/api/bot/wallet-deposit', async (req, res) => {
   sendBotMsg({
     type: 'start',
     total,
-    message: `🤖 Bot initialized. Queued ${total} wallet deposit request(s)...`
+    message: `🤖 Bot initialized. Processing ${total} deposit request(s)...`
   });
 
   // Rate Limiting: 30 requests/min = 2000 ms delay
@@ -88,7 +91,6 @@ app.post('/api/bot/wallet-deposit', async (req, res) => {
             'Content-Type': 'application/json',
             'Accept': 'application/json'
           },
-          maxRedirects: 0, // Prevents Axios from turning POST into GET on HTTP redirects
           timeout: 10000
         }
       );
@@ -128,5 +130,5 @@ app.post('/api/bot/wallet-deposit', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Wallet Deposit Bot server listening on port ${PORT}`);
-  console.log(`Target API Endpoint: ${API_BASE_URL}/wallet/deposit`);
+  console.log(`Active Target Endpoint: ${API_BASE_URL}/wallet/deposit`);
 });
