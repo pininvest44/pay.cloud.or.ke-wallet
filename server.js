@@ -5,13 +5,20 @@ require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const API_BASE_URL = process.env.API_BASE_URL || 'https://pay.cloud.or.ke/api';
+
+// Ensure base URL always starts with https:// and has no trailing slash
+let rawBaseUrl = process.env.API_BASE_URL || 'https://pay.cloud.or.ke/api';
+if (!rawBaseUrl.startsWith('http://') && !rawBaseUrl.startsWith('https://')) {
+  rawBaseUrl = `https://${rawBaseUrl}`;
+}
+const API_BASE_URL = rawBaseUrl.replace(/\/$/, '');
+
 const BEARER_TOKEN = process.env.BEARER_TOKEN || '';
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Helper to sanitize Kenyan phone numbers into 254XXXXXXXXX format
+// Format phone numbers to 254XXXXXXXXX
 function formatPhoneNumber(phone) {
   let cleaned = phone.replace(/\D/g, '');
   if (cleaned.startsWith('0')) {
@@ -36,12 +43,15 @@ app.post('/api/bot/wallet-deposit', async (req, res) => {
     return res.status(400).json({ error: 'Valid deposit amount is required.' });
   }
 
-  // Set up Server-Sent Events (SSE) for dynamic bot response streaming
+  // Set up Server-Sent Events (SSE)
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
 
-  const token = req.headers.authorization || `Bearer ${BEARER_TOKEN}`;
+  let token = req.headers.authorization || `Bearer ${BEARER_TOKEN}`;
+  if (!token.startsWith('Bearer ')) {
+    token = `Bearer ${token}`;
+  }
 
   const sendBotMsg = (data) => {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -56,8 +66,9 @@ app.post('/api/bot/wallet-deposit', async (req, res) => {
     message: `🤖 Bot initialized. Queued ${total} wallet deposit request(s)...`
   });
 
-  // Strict rate limit: 30 requests/min -> 1 request every 2000 ms
+  // Rate Limiting: 30 requests/min = 2000 ms delay
   const INTERVAL_MS = 2000;
+  const endpoint = `${API_BASE_URL}/wallet/deposit`;
 
   for (let i = 0; i < formattedNumbers.length; i++) {
     const phone = formattedNumbers[i];
@@ -65,7 +76,7 @@ app.post('/api/bot/wallet-deposit', async (req, res) => {
 
     try {
       const response = await axios.post(
-        `${API_BASE_URL}/wallet/deposit`,
+        endpoint,
         {
           phone,
           amount: Number(amount),
@@ -73,9 +84,11 @@ app.post('/api/bot/wallet-deposit', async (req, res) => {
         },
         {
           headers: {
-            Authorization: token,
-            'Content-Type': 'application/json'
+            'Authorization': token,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
           },
+          maxRedirects: 0, // Prevents Axios from turning POST into GET on HTTP redirects
           timeout: 10000
         }
       );
@@ -115,4 +128,5 @@ app.post('/api/bot/wallet-deposit', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Wallet Deposit Bot server listening on port ${PORT}`);
+  console.log(`Target API Endpoint: ${API_BASE_URL}/wallet/deposit`);
 });
